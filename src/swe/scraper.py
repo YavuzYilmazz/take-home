@@ -27,30 +27,47 @@ class APIClient:
 
     def fetch_company_jobs(self, company: str) -> List[Dict[str, Any]]:
         """
-        Fetches job listings for a specific company.
+        Fetches job listings for a specific company (with pagination).
         """
+        all_jobs = []
         page_token = None
-        print(f"Fetching jobs for {company}...")
-        params = {"company": company}
-        if page_token:
-            params["pageToken"] = page_token
+        page_num = 1
         
-        try:
-            response = requests.get(f"{BASE_URL}/jobs", params=params, timeout=30)
-            self._request_count += 1
+        print(f"Fetching jobs for {company}...")
+        
+        while True:
+            params = {"company": company}
+            if page_token:
+                params["pageToken"] = page_token
             
-            if response.status_code == 200:
-                data = response.json()
-                jobs = data.get("jobs", [])
-                print(f"  Found {len(jobs)} jobs for {company}.")
-                return jobs
-            else:
-                print(f"  Received HTTP {response.status_code} error for {company}.")
-                return []
+            try:
+                response = requests.get(f"{BASE_URL}/jobs", params=params, timeout=30)
+                self._request_count += 1
                 
-        except requests.RequestException as e:
-            print(f"  A network request failed for {company}: {e}.")
-            return []
+                if response.status_code == 200:
+                    data = response.json()
+                    jobs = data.get("jobs", [])
+                    all_jobs.extend(jobs)
+                    
+                    print(f"  Page {page_num}: Found {len(jobs)} jobs")
+                    
+                    # Check if there are more pages
+                    page_token = data.get("nextPageToken")
+                    if not page_token:
+                        break
+                    
+                    page_num += 1
+                    
+                else:
+                    print(f"  Received HTTP {response.status_code} error for {company}.")
+                    break
+                    
+            except requests.RequestException as e:
+                print(f"  A network request failed for {company}: {e}.")
+                break
+        
+        print(f"  Total: {len(all_jobs)} jobs for {company} \n")
+        return all_jobs
 
 
 def normalize_job_data(job: Dict[str, Any]) -> Dict[str, Any]:
