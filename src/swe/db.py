@@ -3,14 +3,17 @@ import json
 import time
 from pathlib import Path
 from typing import List, Dict, Optional
+from dataclasses import asdict
+
+from .models import JobModel, DatabaseMetadata, DatabaseExport
 
 class InMemoryDB:
-    """Simple in-memory database for job storage."""
+    """Simple in-memory database for job storage using JobModel."""
     
     def __init__(self) -> None:
-        self.jobs: Dict[str, Dict] = {}  # jobId -> job data
+        self.jobs: Dict[str, JobModel] = {}  # jobId -> JobModel
 
-    def save_jobs(self, jobs: List[Dict]) -> int:
+    def save_jobs(self, jobs: List[JobModel]) -> int:
         """
         Upsert jobs by jobId.
         Returns number of new inserts (not updates).
@@ -18,20 +21,19 @@ class InMemoryDB:
         new_inserts = 0
         
         for job in jobs:
-            job_id = job.get('jobId')
-            if not job_id:
+            if not job.jobId:
                 continue  # Skip jobs without jobId
                 
             # Check if this is a new job (insert) or update
-            if job_id not in self.jobs:
+            if job.jobId not in self.jobs:
                 new_inserts += 1
                 
             # Save/update the job
-            self.jobs[job_id] = job.copy()
+            self.jobs[job.jobId] = job
             
         return new_inserts
 
-    def get_job(self, job_id: str) -> Optional[Dict]:
+    def get_job(self, job_id: str) -> Optional[JobModel]:
         """Get job by ID."""
         return self.jobs.get(job_id)
         
@@ -44,19 +46,24 @@ class InMemoryDB:
         self.jobs.clear()
 
     def save_to_file(self, filepath: Path) -> None:
-        """Save all jobs to a JSON file."""
+        """Save all jobs to a JSON file using structured models."""
         try:
             # Create directory if it doesn't exist
             filepath.parent.mkdir(parents=True, exist_ok=True)
             
-            # Prepare data for saving
-            data = {
-                "metadata": {
-                    "total_jobs": len(self.jobs),
-                    "saved_at": time.strftime("%Y-%m-%d %H:%M:%S")
-                },
-                "jobs": list(self.jobs.values())
-            }
+            # Create structured export using models
+            metadata = DatabaseMetadata(
+                total_jobs=len(self.jobs),
+                saved_at=time.strftime("%Y-%m-%d %H:%M:%S")
+            )
+            
+            export_data = DatabaseExport(
+                metadata=metadata,
+                jobs=list(self.jobs.values())
+            )
+            
+            # Convert to dict for JSON serialization
+            data = asdict(export_data)
             
             # Save to file
             with open(filepath, 'w', encoding='utf-8') as f:
@@ -69,7 +76,7 @@ class InMemoryDB:
             raise
 
     def load_from_file(self, filepath: Path) -> None:
-        """Load jobs from a JSON file."""
+        """Load jobs from a JSON file and convert to JobModel instances."""
         try:
             if not filepath.exists():
                 logger.warning(f"File {filepath} does not exist. Starting with empty database.")
@@ -78,14 +85,19 @@ class InMemoryDB:
             with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 
-            # Load jobs from file
-            jobs = data.get("jobs", [])
+            # Load jobs from file and convert to JobModel instances
+            jobs_data = data.get("jobs", [])
             self.clear()  # Clear existing data
             
-            for job in jobs:
-                job_id = job.get('jobId')
-                if job_id:
-                    self.jobs[job_id] = job
+            for job_dict in jobs_data:
+                try:
+                    # Create JobModel from dict
+                    job = JobModel(**job_dict)
+                    if job.jobId:
+                        self.jobs[job.jobId] = job
+                except Exception as e:
+                    logger.warning(f"Failed to load job {job_dict.get('jobId', 'unknown')}: {e}")
+                    continue
 
             logger.info(f"Successfully loaded {len(self.jobs)} jobs from {filepath}")
 
@@ -93,15 +105,14 @@ class InMemoryDB:
             logger.error(f"Error loading from file {filepath}: {e}")
             raise
 
-    def get_all_jobs(self) -> List[Dict]:
-        """Get all jobs as a list."""
+    def get_all_jobs(self) -> List[JobModel]:
+        """Get all jobs as a list of JobModel instances."""
         return list(self.jobs.values())
         
     def get_total_applicants(self) -> int:
         """Calculate total number of applicants across all jobs."""
         total = 0
         for job in self.jobs.values():
-            applicants = job.get('applicants', 0)
-            if isinstance(applicants, (int, float)):
-                total += applicants
+            if isinstance(job.applicants, (int, float)):
+                total += job.applicants
         return total

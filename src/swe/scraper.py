@@ -8,6 +8,7 @@ import logging
 from time import sleep
 
 from .db import InMemoryDB
+from .models import JobModel, CompanyResponse, JobsResponse
 
 # Configure logging
 logging.basicConfig(
@@ -26,15 +27,18 @@ logger = logging.getLogger(__name__)
 BASE_URL = "http://127.0.0.1:5005"
 
 def fetch_company_list() -> List[str]:
-    """Fetches the list of companies from the API."""
+    """Fetches the list of companies from the API using CompanyResponse model."""
     logger.info("Fetching list of companies...")
     try:
         response = requests.get(f"{BASE_URL}/companies", timeout=10)
         response.raise_for_status() # Will raise an exception for 4xx/5xx errors
         data = response.json()
-        companies = data.get("companies", [])
-        logger.info(f"Discovered {len(companies)} companies.")
-        return companies
+        
+        # Use CompanyResponse model for validation
+        company_response = CompanyResponse(companies=data.get("companies", []))
+        
+        logger.info(f"Discovered {len(company_response.companies)} companies.")
+        return company_response.companies
     except requests.RequestException as e:
         logger.error(f"Error: A network request failed while fetching companies: {e}")
         return []
@@ -130,25 +134,40 @@ class APIClient:
         return all_jobs
 
 
-def normalize_job_data(job: Dict[str, Any]) -> Dict[str, Any]:
+def normalize_job_data(job: Dict[str, Any]) -> JobModel:
     """
-    Normalizes job data by standardizing location and date formats.
+    Normalizes job data and returns a validated JobModel instance.
     """
-    normalized_job = job.copy()
+    # Extract basic fields
+    job_id = job.get('jobId', '')
+    title = job.get('title', '')
+    company = job.get('company', '')
+    description = job.get('description')
+    applicants = job.get('applicants', 0)
     
     # Normalize location and extract work type
     location_result = normalize_location(job.get('location'))
     if isinstance(location_result, dict):
-        normalized_job['location'] = location_result['location']
-        normalized_job['workType'] = location_result['workType']
+        location = location_result['location']
+        work_type = location_result['workType']
     else:
-        normalized_job['location'] = location_result
-        normalized_job['workType'] = "Unknown"
+        location = location_result
+        work_type = "Unknown"
     
     # Normalize posted date
-    normalized_job['postedDate'] = normalize_date(job.get('postedDate'))
+    posted_date = normalize_date(job.get('postedDate'))
     
-    return normalized_job
+    # Create and return JobModel (validation happens in __post_init__)
+    return JobModel(
+        jobId=job_id,
+        title=title,
+        company=company,
+        location=location,
+        workType=work_type,
+        postedDate=posted_date,
+        applicants=applicants,
+        description=description
+    )
 
 
 def standardize_location_string(location_str: str) -> str:
@@ -349,11 +368,12 @@ def main():
         company_jobs = client.fetch_company_jobs(company)
         
         if company_jobs:
-            # Normalize all jobs for this company
+            # Normalize all jobs for this company using JobModel
             normalized_jobs = []
             for job in company_jobs:
                 try:
-                    normalized_jobs.append(normalize_job_data(job))
+                    job_model = normalize_job_data(job)
+                    normalized_jobs.append(job_model)
                 except Exception as e:
                     logger.warning(f"Failed to normalize job {job.get('jobId', 'unknown')}: {e}")
                     continue
