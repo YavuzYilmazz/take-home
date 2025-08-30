@@ -1,0 +1,7 @@
+api:
+  url: "http://127.0.0.1:5005" # Base URL for the API
+  timeout: 60 # Timeout for API requests
+  retry:
+    max_attempts: 20 # Maximum number of retry attempts
+    backoff_factor: 0.2 # Seconds
+    status_codes: [429, 500, 502, 503, 504] # HTTP status codes to retry

@@ -1,0 +1,13 @@
+services:
+  mock-api-server:
+    image: canariaapp/mock-api-server:0.1-arm64 # Use mock-api-server:0.1-amd64 if running on AMD64 architecture
+    container_name: mock-api-server-test
+    ports:
+      - "5005:5005"
+    restart: unless-stopped
+    entrypoint: ["./mock_api_server", "--host", "0.0.0.0", "--port", "5005"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5005/companies"]
+      interval: 60s
+      timeout: 3s
+      retries: 5
