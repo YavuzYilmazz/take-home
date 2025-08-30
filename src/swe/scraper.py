@@ -3,6 +3,9 @@ import time
 from typing import List, Dict, Any
 from datetime import datetime
 import re
+from pathlib import Path
+
+from .db import InMemoryDB
 
 # This is a proof-of-concept script for the take-home project.
 # It contains several issues that the candidate is expected to identify and fix.
@@ -78,8 +81,14 @@ def normalize_job_data(job: Dict[str, Any]) -> Dict[str, Any]:
     """
     normalized_job = job.copy()
     
-    # Normalize location
-    normalized_job['location'] = normalize_location(job.get('location'))
+    # Normalize location and extract work type
+    location_result = normalize_location(job.get('location'))
+    if isinstance(location_result, dict):
+        normalized_job['location'] = location_result['location']
+        normalized_job['workType'] = location_result['workType']
+    else:
+        normalized_job['location'] = location_result
+        normalized_job['workType'] = "Unknown"
     
     # Normalize posted date
     normalized_job['postedDate'] = normalize_date(job.get('postedDate'))
@@ -87,27 +96,99 @@ def normalize_job_data(job: Dict[str, Any]) -> Dict[str, Any]:
     return normalized_job
 
 
-def normalize_location(location) -> str:
+def standardize_location_string(location_str: str) -> str:
+    """
+    Standardizes location strings like "City, State, Country" to "City, State" or "City, Country"
+    """
+    if not location_str or ',' not in location_str:
+        return location_str
+    
+    parts = [part.strip() for part in location_str.split(',')]
+    
+    # If we have 3 parts: City, State, Country
+    if len(parts) == 3:
+        city, state, country = parts
+        country_lower = country.lower()
+        if country_lower in ['usa', 'us', 'united states', 'united states of america']:
+            return f"{city}, {state}"
+        else:
+            return f"{city}, {country}"
+    
+    # If 2 parts or other cases, return as is
+    return location_str
+
+
+def normalize_location(location):
     """
     Normalizes location to standard format: "City, State/Country"
+    Returns either a string (normal location) or dict with location and workType
     """
     if not location:
         return "Unknown"
     
-    # If it's already a string, return as is
+    # If it's already a string, clean it up
     if isinstance(location, str):
-        return location if location.strip() else "Unknown"
+        location_clean = location.strip()
+        if not location_clean:
+            return "Unknown"
+        
+        # Handle special cases - extract work type!
+        location_lower = location_clean.lower()
+        if location_lower in ['remote']:
+            return {"location": "Unknown", "workType": "Remote"}
+        elif location_lower in ['on-site', 'onsite', 'on site']:
+            return {"location": "Unknown", "workType": "On-site"}
+        elif location_lower in ['hybrid']:
+            return {"location": "Unknown", "workType": "Hybrid"}
+        elif location_lower in ['unknown', 'n/a', 'na', 'not available', 'not specified']:
+            return "Unknown"
+        
+        # Standardize string locations like "City, State, Country"
+        location_clean = standardize_location_string(location_clean)
+        
+        return location_clean
     
     # If it's a dictionary with city and state
     if isinstance(location, dict):
-        city = location.get('city', '')
-        state = location.get('state', '')
-        if city and state:
+        city = location.get('city', '') or ''
+        state = location.get('state', '') or ''
+        country = location.get('country', '') or ''
+        
+        # Ensure they are strings and strip
+        city = str(city).strip()
+        state = str(state).strip()
+        country = str(country).strip()
+        
+        # Check if city itself is a work type (like Remote, On-site)
+        if city:
+            city_lower = city.lower()
+            if city_lower in ['remote']:
+                return {"location": "Unknown", "workType": "Remote"}
+            elif city_lower in ['on-site', 'onsite', 'on site']:
+                return {"location": "Unknown", "workType": "On-site"}
+            elif city_lower in ['hybrid']:
+                return {"location": "Unknown", "workType": "Hybrid"}
+            elif city_lower in ['unknown', 'n/a', 'na', 'not available', 'not specified']:
+                return "Unknown"
+        
+        # Build location string from components with standardization
+        if city and state and country:
+            # If we have all three, prefer City, State for US locations
+            country_lower = country.lower()
+            if country_lower in ['usa', 'us', 'united states', 'united states of america']:
+                return f"{city}, {state}"
+            else:
+                return f"{city}, {country}"
+        elif city and state:
             return f"{city}, {state}"
+        elif city and country:
+            return f"{city}, {country}"
         elif city:
             return city
         elif state:
             return state
+        elif country:
+            return country
     
     return "Unknown"
 
@@ -121,26 +202,32 @@ def normalize_date(date_value) -> str:
     
     # If it's a string
     if isinstance(date_value, str):
-        if date_value.strip() == "" or date_value == "NaT":
+        date_clean = date_value.strip()
+        if not date_clean:
+            return "Unknown"
+        
+        # Handle special cases
+        date_lower = date_clean.lower()
+        if date_lower in ["nat", "not available", "n/a", "na", "not specified", "unknown"]:
             return "Unknown"
         
         # Try to parse "January 05, 2025" format
         try:
-            parsed_date = datetime.strptime(date_value, "%B %d, %Y")
+            parsed_date = datetime.strptime(date_clean, "%B %d, %Y")
             return parsed_date.strftime("%Y-%m-%d")
         except ValueError:
             pass
         
         # Try to parse "Tue, 08 Jul 2025 11:25:55 +0000" format
         try:
-            parsed_date = datetime.strptime(date_value, "%a, %d %b %Y %H:%M:%S %z")
+            parsed_date = datetime.strptime(date_clean, "%a, %d %b %Y %H:%M:%S %z")
             return parsed_date.strftime("%Y-%m-%d")
         except ValueError:
             pass
         
         # Try to parse "02/10/2025" format (MM/dd/yyyy)
         try:
-            parsed_date = datetime.strptime(date_value, "%m/%d/%Y")
+            parsed_date = datetime.strptime(date_clean, "%m/%d/%Y")
             return parsed_date.strftime("%Y-%m-%d")
         except ValueError:
             pass
@@ -148,8 +235,8 @@ def normalize_date(date_value) -> str:
         # Try to parse ISO datetime formats like "2025-04-03T11:25:55.567344+00:00"
         try:
             # Remove microseconds if present and parse
-            if 'T' in date_value:
-                date_part = date_value.split('T')[0]
+            if 'T' in date_clean:
+                date_part = date_clean.split('T')[0]
                 parsed_date = datetime.strptime(date_part, "%Y-%m-%d")
                 return parsed_date.strftime("%Y-%m-%d")
         except ValueError:
@@ -157,13 +244,13 @@ def normalize_date(date_value) -> str:
         
         # Check if it's already in YYYY-MM-DD format
         try:
-            parsed_date = datetime.strptime(date_value, "%Y-%m-%d")
+            parsed_date = datetime.strptime(date_clean, "%Y-%m-%d")
             return parsed_date.strftime("%Y-%m-%d")
         except ValueError:
             pass
         
-        # If it can't be parsed, return as is
-        return date_value
+        # If it can't be parsed, return Unknown instead of the invalid string
+        return "Unknown"
     
     # If it's a unix timestamp (integer) - handle both seconds and milliseconds
     if isinstance(date_value, (int, float)):
@@ -189,24 +276,45 @@ def main():
     print("=== Job Scraper Starting ===")
     start_time = time.time()
     
-    companies_to_process = fetch_company_list()
+    # Initialize database
+    db = InMemoryDB()
+    
+    companies_to_process = fetch_company_list()[:50]  # Limit to first 50 companies for testing
     if not companies_to_process:
         print("No companies to process. Exiting.")
         return
 
     client = APIClient()
-    all_jobs = []
     
+    # Process each company
     for company in companies_to_process:
         company_jobs = client.fetch_company_jobs(company)
         
-        for job in company_jobs:
-             all_jobs.append(normalize_job_data(job))
+        if company_jobs:
+            # Normalize all jobs for this company
+            normalized_jobs = []
+            for job in company_jobs:
+                normalized_jobs.append(normalize_job_data(job))
+            
+            # Save to database
+            new_inserts = db.save_jobs(normalized_jobs)
+            print(f"  Saved {new_inserts} new jobs from {company} to database \n \n")
+    
+    # Save to file
+    output_file = Path("jobs_data.json")
+    db.save_to_file(output_file)
+    
+    # Generate final summary
+    total_jobs = db.count()
+    total_applicants = db.get_total_applicants()
     
     print("\n" + "="*25 + " Results Summary " + "="*25)
-    print(f"Total jobs found: {len(all_jobs)}")
+    print(f"Total companies processed: {len(companies_to_process)}")
+    print(f"Total jobs stored: {total_jobs}")
+    print(f"Total applicants counted: {total_applicants}")
     print(f"Total API requests made: {client._request_count}")
     print(f"Total time taken: {time.time() - start_time:.2f}s")
+    print(f"Data saved to: {output_file}")
     print("="*70)
 
 if __name__ == "__main__":
