@@ -4,8 +4,22 @@ from typing import List, Dict, Any
 from datetime import datetime
 import re
 from pathlib import Path
+import logging
+from time import sleep
 
 from .db import InMemoryDB
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)-8s %(asctime)s - %(message)s',
+    datefmt='%H:%M:%S',
+    handlers=[
+        logging.FileHandler('scraper.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # This is a proof-of-concept script for the take-home project.
 # It contains several issues that the candidate is expected to identify and fix.
@@ -13,32 +27,69 @@ BASE_URL = "http://127.0.0.1:5005"
 
 def fetch_company_list() -> List[str]:
     """Fetches the list of companies from the API."""
-    print("Fetching list of companies...")
+    logger.info("Fetching list of companies...")
     try:
         response = requests.get(f"{BASE_URL}/companies", timeout=10)
         response.raise_for_status() # Will raise an exception for 4xx/5xx errors
         data = response.json()
         companies = data.get("companies", [])
-        print(f"Discovered {len(companies)} companies.")
+        logger.info(f"Discovered {len(companies)} companies.")
         return companies
     except requests.RequestException as e:
-        print(f"Error: A network request failed while fetching companies: {e}")
+        logger.error(f"Error: A network request failed while fetching companies: {e}")
         return []
 
 
 class APIClient:
-    def __init__(self):
+    def __init__(self, max_retries=3):
         self._request_count = 0
+        self.max_retries = max_retries
+
+    def _make_request_with_retry(self, url, params, timeout=30):
+        """Make HTTP request with retry logic for 500 errors"""
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = requests.get(url, params=params, timeout=timeout)
+                self._request_count += 1
+                
+                if response.status_code == 200:
+                    return response
+                elif response.status_code >= 500:
+                    # Server error - retry
+                    if attempt < self.max_retries:
+                        wait_time = (2 ** attempt) * 1  # Exponential backoff: 1s, 2s, 4s
+                        logger.warning(f"HTTP {response.status_code} error, attempt {attempt + 1}/{self.max_retries + 1}. Retrying in {wait_time}s...")
+                        sleep(wait_time)
+                        continue
+                    else:
+                        logger.error(f"HTTP {response.status_code} error after {self.max_retries} retries")
+                        return response
+                else:
+                    # Client error (4xx) - don't retry
+                    logger.error(f"HTTP {response.status_code} client error - not retrying")
+                    return response
+                    
+            except requests.RequestException as e:
+                if attempt < self.max_retries:
+                    wait_time = (2 ** attempt) * 1
+                    logger.warning(f"Network error on attempt {attempt + 1}/{self.max_retries + 1}: {e}. Retrying in {wait_time}s...")
+                    sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Network error after {self.max_retries} retries: {e}")
+                    raise
+        
+        return None
 
     def fetch_company_jobs(self, company: str) -> List[Dict[str, Any]]:
         """
-        Fetches job listings for a specific company (with pagination).
+        Fetches job listings for a specific company (with pagination, retry logic, and rate limiting).
         """
         all_jobs = []
         page_token = None
         page_num = 1
         
-        print(f"Fetching jobs for {company}...")
+        logger.info(f"Fetching jobs for {company}...")
         
         while True:
             params = {"company": company}
@@ -46,15 +97,14 @@ class APIClient:
                 params["pageToken"] = page_token
             
             try:
-                response = requests.get(f"{BASE_URL}/jobs", params=params, timeout=30)
-                self._request_count += 1
+                response = self._make_request_with_retry(f"{BASE_URL}/jobs", params)
                 
-                if response.status_code == 200:
+                if response and response.status_code == 200:
                     data = response.json()
                     jobs = data.get("jobs", [])
                     all_jobs.extend(jobs)
                     
-                    print(f"  Page {page_num}: Found {len(jobs)} jobs")
+                    logger.info(f"  Page {page_num}: Found {len(jobs)} jobs")
                     
                     # Check if there are more pages
                     page_token = data.get("nextPageToken")
@@ -64,14 +114,19 @@ class APIClient:
                     page_num += 1
                     
                 else:
-                    print(f"  Received HTTP {response.status_code} error for {company}.")
+                    error_msg = f"Failed to fetch jobs for {company}"
+                    if response:
+                        error_msg += f" - HTTP {response.status_code}"
+                    logger.error(error_msg)
                     break
                     
             except requests.RequestException as e:
-                print(f"  A network request failed for {company}: {e}.")
+                logger.error(f"Network request failed for {company}: {e}")
                 break
         
-        print(f"  Total: {len(all_jobs)} jobs for {company} \n")
+        logger.info(f"  Total: {len(all_jobs)} jobs for {company}")
+        if all_jobs:
+            logger.info("")  # Empty line for spacing
         return all_jobs
 
 
@@ -273,49 +328,71 @@ def main():
     """
     Main scraper function.
     """
-    print("=== Job Scraper Starting ===")
+    logger.info("=== Job Scraper Starting ===")
     start_time = time.time()
     
     # Initialize database
     db = InMemoryDB()
     
-    companies_to_process = fetch_company_list()[:50]  # Limit to first 50 companies for testing
+    companies_to_process = fetch_company_list()[:5]  # Test with first 20 companies
     if not companies_to_process:
-        print("No companies to process. Exiting.")
+        logger.error("No companies to process. Exiting.")
         return
 
-    client = APIClient()
+    client = APIClient(max_retries=3)
     
     # Process each company
-    for company in companies_to_process:
+    successful_companies = 0
+    for i, company in enumerate(companies_to_process, 1):
+        logger.info(f"Processing company {i}/{len(companies_to_process)}: {company}")
+        
         company_jobs = client.fetch_company_jobs(company)
         
         if company_jobs:
             # Normalize all jobs for this company
             normalized_jobs = []
             for job in company_jobs:
-                normalized_jobs.append(normalize_job_data(job))
+                try:
+                    normalized_jobs.append(normalize_job_data(job))
+                except Exception as e:
+                    logger.warning(f"Failed to normalize job {job.get('jobId', 'unknown')}: {e}")
+                    continue
             
             # Save to database
             new_inserts = db.save_jobs(normalized_jobs)
-            print(f"  Saved {new_inserts} new jobs from {company} to database \n \n")
+            logger.info(f"  Saved {new_inserts} new jobs from {company} to database")
+            successful_companies += 1
+        else:
+            logger.warning(f"  No jobs found for {company}")
+        
+        # Add spacing between companies (2 empty lines)
+        if i < len(companies_to_process):
+            logger.info("")
+            logger.info("")
     
-    # Save to file
-    output_file = Path("jobs_data.json")
-    db.save_to_file(output_file)
+    # Save to file (in workspace root, not src directory)
+    output_file = Path("../jobs_data.json")
+    try:
+        db.save_to_file(output_file)
+        logger.info(f"Successfully saved data to {output_file}")
+    except Exception as e:
+        logger.error(f"Failed to save data to file: {e}")
     
     # Generate final summary
     total_jobs = db.count()
     total_applicants = db.get_total_applicants()
     
-    print("\n" + "="*25 + " Results Summary " + "="*25)
-    print(f"Total companies processed: {len(companies_to_process)}")
-    print(f"Total jobs stored: {total_jobs}")
-    print(f"Total applicants counted: {total_applicants}")
-    print(f"Total API requests made: {client._request_count}")
-    print(f"Total time taken: {time.time() - start_time:.2f}s")
-    print(f"Data saved to: {output_file}")
-    print("="*70)
+    logger.info("")  # Empty line before summary
+    logger.info("=" * 25 + " Results Summary " + "=" * 25)
+    logger.info(f"Total companies processed: {len(companies_to_process)}")
+    logger.info(f"Successful companies: {successful_companies}")
+    logger.info(f"Total jobs stored: {total_jobs}")
+    logger.info(f"Total applicants counted: {total_applicants}")
+    logger.info(f"Total API requests made: {client._request_count}")
+    logger.info(f"Total time taken: {time.time() - start_time:.2f}s")
+    logger.info(f"Average time per company: {(time.time() - start_time) / len(companies_to_process):.2f}s")
+    logger.info(f"Data saved to: {output_file}")
+    logger.info("="*70)
 
 if __name__ == "__main__":
     main()

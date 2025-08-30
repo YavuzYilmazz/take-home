@@ -1,3 +1,4 @@
+from asyncio.log import logger
 import json
 import time
 from pathlib import Path
@@ -61,17 +62,17 @@ class InMemoryDB:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
                 
-            print(f"Successfully saved {len(self.jobs)} jobs to {filepath}")
+            logger.info(f"Successfully saved {len(self.jobs)} jobs to {filepath}")
             
         except Exception as e:
-            print(f"Error saving to file {filepath}: {e}")
+            logger.error(f"Error saving to file {filepath}: {e}")
             raise
 
     def load_from_file(self, filepath: Path) -> None:
         """Load jobs from a JSON file."""
         try:
             if not filepath.exists():
-                print(f"File {filepath} does not exist. Starting with empty database.")
+                logger.warning(f"File {filepath} does not exist. Starting with empty database.")
                 return
                 
             with open(filepath, 'r', encoding='utf-8') as f:
@@ -85,11 +86,11 @@ class InMemoryDB:
                 job_id = job.get('jobId')
                 if job_id:
                     self.jobs[job_id] = job
-                    
-            print(f"Successfully loaded {len(self.jobs)} jobs from {filepath}")
-            
+
+            logger.info(f"Successfully loaded {len(self.jobs)} jobs from {filepath}")
+
         except Exception as e:
-            print(f"Error loading from file {filepath}: {e}")
+            logger.error(f"Error loading from file {filepath}: {e}")
             raise
 
     def get_all_jobs(self) -> List[Dict]:
