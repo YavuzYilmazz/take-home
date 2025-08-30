@@ -353,7 +353,7 @@ def main():
     # Initialize database
     db = InMemoryDB()
     
-    companies_to_process = fetch_company_list()[:5]  # Test with first 20 companies
+    companies_to_process = fetch_company_list()  # Process all companies
     if not companies_to_process:
         logger.error("No companies to process. Exiting.")
         return
