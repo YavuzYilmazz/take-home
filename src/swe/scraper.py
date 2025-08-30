@@ -1,6 +1,8 @@
 import requests
 import time
 from typing import List, Dict, Any
+from datetime import datetime
+import re
 
 # This is a proof-of-concept script for the take-home project.
 # It contains several issues that the candidate is expected to identify and fix.
@@ -72,9 +74,112 @@ class APIClient:
 
 def normalize_job_data(job: Dict[str, Any]) -> Dict[str, Any]:
     """
-    A placeholder for data normalization.
+    Normalizes job data by standardizing location and date formats.
     """
-    return job
+    normalized_job = job.copy()
+    
+    # Normalize location
+    normalized_job['location'] = normalize_location(job.get('location'))
+    
+    # Normalize posted date
+    normalized_job['postedDate'] = normalize_date(job.get('postedDate'))
+    
+    return normalized_job
+
+
+def normalize_location(location) -> str:
+    """
+    Normalizes location to standard format: "City, State/Country"
+    """
+    if not location:
+        return "Unknown"
+    
+    # If it's already a string, return as is
+    if isinstance(location, str):
+        return location if location.strip() else "Unknown"
+    
+    # If it's a dictionary with city and state
+    if isinstance(location, dict):
+        city = location.get('city', '')
+        state = location.get('state', '')
+        if city and state:
+            return f"{city}, {state}"
+        elif city:
+            return city
+        elif state:
+            return state
+    
+    return "Unknown"
+
+
+def normalize_date(date_value) -> str:
+    """
+    Normalizes posted date to ISO format: YYYY-MM-DD
+    """
+    if not date_value:
+        return "Unknown"
+    
+    # If it's a string
+    if isinstance(date_value, str):
+        if date_value.strip() == "" or date_value == "NaT":
+            return "Unknown"
+        
+        # Try to parse "January 05, 2025" format
+        try:
+            parsed_date = datetime.strptime(date_value, "%B %d, %Y")
+            return parsed_date.strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+        
+        # Try to parse "Tue, 08 Jul 2025 11:25:55 +0000" format
+        try:
+            parsed_date = datetime.strptime(date_value, "%a, %d %b %Y %H:%M:%S %z")
+            return parsed_date.strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+        
+        # Try to parse "02/10/2025" format (MM/dd/yyyy)
+        try:
+            parsed_date = datetime.strptime(date_value, "%m/%d/%Y")
+            return parsed_date.strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+        
+        # Try to parse ISO datetime formats like "2025-04-03T11:25:55.567344+00:00"
+        try:
+            # Remove microseconds if present and parse
+            if 'T' in date_value:
+                date_part = date_value.split('T')[0]
+                parsed_date = datetime.strptime(date_part, "%Y-%m-%d")
+                return parsed_date.strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+        
+        # Check if it's already in YYYY-MM-DD format
+        try:
+            parsed_date = datetime.strptime(date_value, "%Y-%m-%d")
+            return parsed_date.strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+        
+        # If it can't be parsed, return as is
+        return date_value
+    
+    # If it's a unix timestamp (integer) - handle both seconds and milliseconds
+    if isinstance(date_value, (int, float)):
+        try:
+            # If it's a large number, it might be in milliseconds
+            if date_value > 1e10:  # If timestamp is > year 2001 in milliseconds
+                timestamp = date_value / 1000  # Convert to seconds
+            else:
+                timestamp = date_value
+            
+            parsed_date = datetime.fromtimestamp(timestamp)
+            return parsed_date.strftime("%Y-%m-%d")
+        except (ValueError, OSError):
+            return "Unknown"
+    
+    return "Unknown"
 
 
 def main():
